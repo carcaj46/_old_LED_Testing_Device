@@ -1,0 +1,264 @@
+//Zanelli Ultima versione Funzionante
+#include "N76E003.h"
+#include "Common.h"
+#include "SFR_Macro.h"
+#include "Function_define.h"
+#include "Delay.h"
+
+// Definizione dei pin
+#define MOTOR_FORWARD P00
+#define MOTOR_REVERSE P17
+#define ERROR_LED P05
+#define YELLOW_LED P30
+#define SLOW_PIN P01
+#define MANUAL_FORWARD P14
+#define MANUAL_REVERSE P15
+#define SENSOR_1 P11
+#define SENSOR_2 P12
+#define SENSOR_3 P13
+#define LIMIT_SENSOR P03
+#define START_BUTTON P04
+#define RESET_BUTTON P06
+
+// Definizione delle macro per impostare e cancellare i pin
+#ifndef set_P00
+#define set_P00 P00 = 1
+#endif
+#ifndef clr_P00
+#define clr_P00 P00 = 0
+#endif
+#ifndef set_P17
+#define set_P17 P17 = 1
+#endif
+#ifndef clr_P17
+#define clr_P17 P17 = 0
+#endif
+#ifndef set_P05
+#define set_P05 P05 = 1
+#endif
+#ifndef clr_P05
+#define clr_P05 P05 = 0
+#endif
+#ifndef set_P30
+#define set_P30 P30 = 1
+#endif
+#ifndef clr_P30
+#define clr_P30 P30 = 0
+#endif
+#ifndef set_P01
+#define set_P01 P01 = 1
+#endif
+#ifndef clr_P01
+#define clr_P01 P01 = 0
+#endif
+
+// Prototipo della funzione Timer0_Delay1ms
+void Timer0_Delay1ms(unsigned int count);
+
+// Prototipi delle funzioni modulari
+void handle_start_reset_buttons();
+void handle_reversing();
+void handle_sensors();
+void handle_sensor(unsigned char sensor, int *activated, unsigned int *deactivation_time);
+//void update_error_led();
+
+int sensor1_activated = 0;
+int sensor2_activated = 0;
+int sensor3_activated = 0;
+int started = 0;
+int running = 0;
+int reversing = 0;
+int resetting = 0;
+int manual = 0;
+
+unsigned int reset_hold_time = 0;
+unsigned int sensor1_deactivation_time = 0;
+unsigned int sensor2_deactivation_time = 0;
+unsigned int sensor3_deactivation_time = 0;
+unsigned int counter = 0;
+int prev_reversing = 0;
+
+void initialize() {
+    P00_PushPull_Mode;  // Configura P00 come output push-pull
+    P17_PushPull_Mode;  // Configura P17 come output push-pull
+    P05_PushPull_Mode;
+		P30_PushPull_Mode;
+    P01_PushPull_Mode;
+    P14_Input_Mode;
+    P15_Input_Mode;
+    P11_Input_Mode;
+    P12_Input_Mode;
+    P13_Input_Mode;
+    P03_Input_Mode;
+    P04_Input_Mode;
+    P06_Input_Mode;
+
+    MOTOR_FORWARD = 0;
+    MOTOR_REVERSE = 0;
+    ERROR_LED = 0;
+    SLOW_PIN = 0;
+}
+
+void manual_override(void) {
+    // Controlli manuali
+    if (MANUAL_FORWARD == 0x00 && MANUAL_REVERSE == 0xff && LIMIT_SENSOR == 0x00) {
+        set_P00;
+        set_P01;
+        clr_P17;
+				manual = 1;
+    } else if (MANUAL_FORWARD == 0x00 && MANUAL_REVERSE == 0xff && LIMIT_SENSOR == 0xff) {
+        clr_P00; // Ferma il motore avanti
+        set_P17; // Attiva la marcia indietro
+        Timer0_Delay1ms(300); // Attiva per 0.3s
+        clr_P17; // Ferma il motore avanti
+				manual = 1;		
+    } else if (MANUAL_FORWARD == 0xff && MANUAL_REVERSE == 0x00 && LIMIT_SENSOR == 0x00) {
+        clr_P00;
+        set_P17;
+        set_P01;
+				manual = 1;
+    } else if (MANUAL_FORWARD == 0xff && MANUAL_REVERSE == 0x00 && LIMIT_SENSOR == 0xff) {
+        clr_P17; // Ferma il motore indietro
+        set_P00; // Attiva la marcia avanti
+        Timer0_Delay1ms(300); // Attiva per 0.3s
+        clr_P00; // Ferma il motore indietro
+				manual = 1;
+    } else if (MANUAL_FORWARD == 0xff && MANUAL_REVERSE == 0xff) {
+        clr_P00;
+        clr_P17;
+        clr_P01;
+				manual = 0;
+		}
+}
+
+
+void handle_start_reset_buttons() {
+    if (START_BUTTON == 0xff && RESET_BUTTON == 0x00 && started == 0) {
+        started = 1;
+				running = 1;
+    } if (RESET_BUTTON == 0xff && started == 1) {
+				//started = 0;
+    } if (RESET_BUTTON == 0xff && reset_hold_time < 3000) {
+        Timer0_Delay1ms(1);
+        reset_hold_time++;
+    } else if (RESET_BUTTON == 0x00) {
+        reset_hold_time = 0;
+    } if (reset_hold_time >= 3000) {
+				counter = 0;
+				resetting = 1;
+				started = 0;  
+				reversing = 1;
+			  running = 0;
+    }
+}
+
+void handle_reversing() {
+    if (reversing == 1 && sensor1_activated == 1 && sensor2_activated == 1) {
+        reversing = 0;
+    }
+    if (reversing == 1 && LIMIT_SENSOR == 0x00) {
+        set_P17;
+    }
+    if (reversing == 1 && LIMIT_SENSOR == 0xff) {
+        reversing = 0;
+    }
+		if (resetting == 1 && sensor1_activated == 1 && sensor2_activated == 1) {
+        resetting = 0;
+    }
+		if (reversing == 1 && sensor1_activated == 1 && sensor2_activated == 0 && sensor3_activated == 0){
+				set_P01;
+		}
+}
+
+void handle_sensors() {
+    handle_sensor(SENSOR_1, &sensor1_activated, &sensor1_deactivation_time);
+    handle_sensor(SENSOR_2, &sensor2_activated, &sensor2_deactivation_time);
+    handle_sensor(SENSOR_3, &sensor3_activated, &sensor3_deactivation_time);
+}
+
+void handle_sensor(unsigned char sensor, int *activated, unsigned int *deactivation_time) {
+    if (sensor == 0x00) {
+        *activated = 1;
+        *deactivation_time = 0;
+    } else {
+        if (*activated) {
+            if (*deactivation_time >= 250) {
+                *activated = 0;
+            } else {
+                Timer0_Delay1ms(1);
+                (*deactivation_time)++;
+            }
+        }
+    }
+}
+
+void main(void) {
+    static bit initialized = 0;
+
+    if (!initialized) {
+        initialize();
+        initialized = 1;
+    }
+
+    TA = 0xAA;
+    TA = 0x55;
+    WDCON &= ~(1 << 7);
+
+    while (1) {
+        manual_override();
+        handle_start_reset_buttons();
+				handle_sensors();
+
+				if (!started && running && LIMIT_SENSOR == 0x00 && !resetting && counter > 0) {
+						started = 1;
+				}
+			
+        if (started) {			
+						if (!sensor3_activated && reversing == 0) {
+                set_P00; // Start motor forward
+            } if (sensor3_activated) {
+                clr_P00; // Stop motor forward
+								reversing = 1;
+            } if (LIMIT_SENSOR == 0xff) {
+                clr_P00; // Stop motor forward **
+                set_P17; // Activate reverse
+                Timer0_Delay1ms(300); // Activate for 0.3s
+                clr_P17; // Stop reverse
+                started = 0; // Stop the motor after the operation
+            }
+        }
+				
+				if (!started && running && LIMIT_SENSOR == 0x00 && !resetting && counter > 0) {
+						started = 1;
+				}
+				
+				if (reversing != prev_reversing) {
+					if(started)/*!resetting)*/{
+							counter++;
+							prev_reversing = reversing;
+					}
+				}
+				
+				if(started == 1){
+						set_P30;
+				}
+				
+				if(started == 0){
+						clr_P30;
+				}				
+				
+				if(counter == 0) {
+						clr_P05;
+				} 
+				//DA RADDOPPIARE SEMPRE 8000 per farne 4000
+				if(counter > 8000) {				
+						set_P05;
+						resetting = 0;
+						started = 0;  
+						reversing = 0;
+				}
+				
+				handle_reversing();
+        handle_sensors();
+    }
+}
